@@ -1,6 +1,8 @@
 {
   "name": "Bilge Kuzu Baa",
   "description": "Ülkelerin geleneklerine, kültürlerine, inançlarına ve zengin tarihine hâkim, tamamen etkileşimli 3D akıllı kuzu barmen Baa ile derin ve sürükleyici bir sohbet deneyimi.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "microphone"
+  ],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
