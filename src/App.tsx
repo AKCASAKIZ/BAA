@@ -15,7 +15,12 @@ import {
   Languages, 
   Clock,
   HelpCircle,
-  Share2
+  Share2,
+  Mic,
+  MicOff,
+  Music,
+  Film,
+  Play
 } from 'lucide-react';
 
 import { COUNTRIES } from './data';
@@ -36,10 +41,33 @@ export default function App() {
   const [input, setInput] = useState<string>('');
   const [isTalking, setIsTalking] = useState<boolean>(false);
   const [isThinking, setIsThinking] = useState<boolean>(false);
-  const [soundEnabled, setSoundEnabled] = useState<boolean>(false);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true); // Default to true so voices work elegantly
   const [selectedMilk, setSelectedMilk] = useState<MilkOption | null>(null);
   const [isPouring, setIsPouring] = useState<boolean>(false);
   
+  // Custom Speech Recording (STT) and Media recommendation tracking states
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [activeMedia, setActiveMedia] = useState<{
+    type: string;
+    title: string;
+    description: string;
+    query: string;
+  } | null>(null);
+
+  // Self-introduction memory form states
+  const [userName, setUserName] = useState<string>('');
+  const [userAge, setUserAge] = useState<string>('');
+  const [userMood, setUserMood] = useState<string>('Dertli / Yorgun');
+  const [userGoal, setUserGoal] = useState<string>('Derdini Dinlet (Sözel Terapi)');
+  const [userProfileSaved, setUserProfileSaved] = useState<boolean>(false);
+
+  // Custom milk brewery selection states
+  const [milkMenuTab, setMilkMenuTab] = useState<'predefined' | 'custom'>('predefined');
+  const [milkBase, setMilkBase] = useState<string>('tam_yagli');
+  const [milkFlavor, setMilkFlavor] = useState<string>('bal_karabiber');
+  const [milkTemp, setMilkTemp] = useState<string>('ilik');
+
+  const recognitionRef = useRef<any>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
 
@@ -121,6 +149,115 @@ export default function App() {
     }
   };
 
+  // Text-To-Speech (TTS) using Web Speech API synthesis
+  const speakResponse = (text: string) => {
+    if (!soundEnabled || typeof window === 'undefined' || !window.speechSynthesis) return;
+    try {
+      // Clear ongoing speech to avoid queues
+      window.speechSynthesis.cancel();
+      
+      // Clean tags like [MEDIA:...] so Baa doesn't read the technical code aloud
+      const textToRead = text.replace(/\[MEDIA:[^\]]+\]/g, '').trim();
+      if (!textToRead) return;
+
+      const utterance = new SpeechSynthesisUtterance(textToRead);
+      utterance.lang = 'tr-TR';
+      utterance.pitch = 1.35; // Cute sage lamb pitch
+      utterance.rate = 1.05;  // Comforting barmen speech rate
+
+      // Use a turkish voice if available
+      const voices = window.speechSynthesis.getVoices();
+      const trVoice = voices.find(v => v.lang.toLowerCase().includes('tr'));
+      if (trVoice) {
+        utterance.voice = trVoice;
+      }
+
+      utterance.onstart = () => {
+        setIsTalking(true);
+      };
+      utterance.onend = () => {
+        setIsTalking(false);
+      };
+      utterance.onerror = () => {
+        setIsTalking(false);
+      };
+
+      window.speechSynthesis.speak(utterance);
+    } catch (err) {
+      console.warn("TTS synthesis failed or unsupported:", err);
+    }
+  };
+
+  // Speech-To-Text (STT) web speech api listener
+  const toggleRecording = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Maalesef tarayıcınız ses tanımayı (STT) desteklemiyor. Güncel bir Chrome veya Edge tarayıcı kullanırsanız sesli dertleşebilirsiniz!");
+      return;
+    }
+
+    if (isRecording) {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+      setIsRecording(false);
+    } else {
+      try {
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'tr-TR';
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+
+        recognition.onstart = () => {
+          setIsRecording(true);
+          playLambSound(1.2); // play happy ping sound
+        };
+
+        recognition.onresult = (event: any) => {
+          const transcript = event.results[0][0].transcript;
+          if (transcript) {
+            setInput(prev => prev + (prev ? ' ' : '') + transcript);
+          }
+        };
+
+        recognition.onerror = (e: any) => {
+          console.error("Speech recognition error:", e);
+          setIsRecording(false);
+        };
+
+        recognition.onend = () => {
+          setIsRecording(false);
+        };
+
+        recognitionRef.current = recognition;
+        recognition.start();
+      } catch (err) {
+        console.error("Failed to start speech recognition app:", err);
+        setIsRecording(false);
+      }
+    }
+  };
+
+  // Helper to extract embedded media tags [MEDIA:type|title|description|query]
+  const parseResponseAndMedia = (text: string) => {
+    const mediaRegex = /\[MEDIA:([^|]+)\|([^|]+)\|([^|]+)\|([^\]]+)\]/;
+    const match = text.match(mediaRegex);
+    if (match) {
+      const cleanText = text.replace(mediaRegex, '').trim();
+      return {
+        cleanText,
+        media: {
+          type: match[1],         // "music" or "video"
+          title: match[2],        // Song or video title
+          description: match[3],  // Warm presentation commentary
+          query: match[4]         // search keyword
+        }
+      };
+    }
+    return { cleanText: text, media: null };
+  };
+
   const handleSend = async (textToSend?: string) => {
     const rawText = textToSend || input;
     const finalTxt = rawText.trim();
@@ -141,6 +278,11 @@ export default function App() {
     setMessages(prev => [...prev, userMsg]);
     setIsThinking(true);
     playLambSound(1.1); // Slightly higher pitch for user inquiry
+
+    // Stop speaking while submitting a new message
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
 
     try {
       // Send chat history to backend proxy calling Gemini Server-Side Secure SDK with search grounding enabled
@@ -166,18 +308,31 @@ export default function App() {
       if (data.reply) {
         setIsTalking(true);
         playLambSound(0.95); // Deeper wise pitch when starting response
+
+        // Parse reply text for media tags automatically
+        const parsed = parseResponseAndMedia(data.reply);
         
-        const systemMsg: Message = {
+        const systemMsg: Message & { mediaRecommendation?: any } = {
           id: `model-${Date.now()}`,
           role: 'model',
-          content: data.reply,
+          content: parsed.cleanText,
           timestamp: new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }),
-          groundingSources: data.sources || []
+          groundingSources: data.sources || [],
+          mediaRecommendation: parsed.media
         };
+
+        // Track recommended media globally as well
+        if (parsed.media) {
+          setActiveMedia(parsed.media);
+        }
+
         setMessages(prev => [...prev, systemMsg]);
 
+        // Synthesize sweet Turkish voice readout
+        speakResponse(parsed.cleanText);
+
         // Stop mouth talking animation after realistic time related to text length
-        const duration = Math.min(8000, Math.max(2500, data.reply.length * 35));
+        const duration = Math.min(8000, Math.max(2500, parsed.cleanText.length * 35));
         setTimeout(() => {
           setIsTalking(false);
         }, duration);
@@ -248,6 +403,95 @@ export default function App() {
       setIsPouring(false);
       // Ask Baa what she thinks about this selected milk
       handleSend(`Bana bu geleneksel ${item.name} sundun, kuzu kurnazlığıyla bunun ardındaki kültürü ve bu sütün bana şifasını, hikayesini anlat bakalım!`);
+    }, 1500);
+  };
+
+  const pourCustomMilk = () => {
+    if (isPouring) return;
+    setIsPouring(true);
+    
+    // Create a mock MilkOption item for custom pouring display
+    const customItem: MilkOption = {
+      id: 'custom_milk',
+      name: 'Özel Karışım Şifalı Süt',
+      desc: 'Pişirme kazanınında senin için demlenen özel kuzu karışımı!',
+      effect: 'Fiziksel zindelik ve derin ruhsal sükunet sunar.',
+      icon: '🥛'
+    };
+    setSelectedMilk(customItem);
+    playLambSound(1.25);
+
+    // Synthesize pouring sound
+    if (soundEnabled) {
+      try {
+        if (!audioContextRef.current) {
+          audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        }
+        const ctx = audioContextRef.current;
+        const bufferSize = ctx.sampleRate * 1.5;
+        const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const output = noiseBuffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          output[i] = Math.random() * 2 - 1;
+        }
+
+        const whiteNoise = ctx.createBufferSource();
+        whiteNoise.buffer = noiseBuffer;
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'bandpass';
+        filter.frequency.setValueAtTime(320, ctx.currentTime);
+        filter.frequency.exponentialRampToValueAtTime(750, ctx.currentTime + 1.2);
+        filter.Q.value = 1.0;
+
+        const gainNode = ctx.createGain();
+        gainNode.gain.setValueAtTime(0.01, ctx.currentTime);
+        gainNode.gain.linearRampToValueAtTime(0.14, ctx.currentTime + 0.1);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.5);
+
+        whiteNoise.connect(filter);
+        filter.connect(gainNode);
+        gainNode.connect(ctx.destination);
+
+        whiteNoise.start();
+        whiteNoise.stop(ctx.currentTime + 1.5);
+      } catch (err) {}
+    }
+
+    // Map keys to human descriptions
+    const baseNames: Record<string, string> = {
+      tam_yagli: 'Tam Yağlı Köy Sütü (%100 Yoğun Geleneksel Şifa)',
+      yarim_yagli: 'Yarım Yağlı Süt (%1.5 Yağ Seviyesi ile Dengeli)',
+      yagsiz: 'Yağsız Diyet Fit Süt (%0 Yağ Seviyesi)',
+      laktozsuz: 'Laktozsuz Süt (Sindirimi Kolay Hassas Ruhlar İçin)',
+      manda: 'Köy Usulü Kaymaklı Hakiki Manda Sütü'
+    };
+
+    const flavorNames: Record<string, string> = {
+      bal_karabiber: 'Süzme Çiçek Balı & Çekilmiş Taze Karabiber',
+      tarcin_salep: 'Kış Tarçını & Doğal Salep Özü Tozu',
+      zencefil: 'Rendelenmiş Taze Zencefil & Karanfil Çekirdekleri',
+      damla: 'Damla Sakızı Yağı & Kakule Tohumları',
+      lavanta_uyku: 'Yabani Lavanta Yaprağı & Melisa Çiçeği Özü'
+    };
+
+    const tempNames: Record<string, string> = {
+      ilik: 'Sıcacık Ilık Derecede',
+      kaynar: 'Ateş gibi Hararetli ve Kaynar Kaynar Sıcacık',
+      buzlu: 'Buzlu ve Serinletici Canlandırıcı Soğuk'
+    };
+
+    const selectedBaseDesc = baseNames[milkBase] || milkBase;
+    const selectedFlavorDesc = flavorNames[milkFlavor] || milkFlavor;
+    const selectedTempDesc = tempNames[milkTemp] || milkTemp;
+
+    setTimeout(() => {
+      setIsPouring(false);
+      handleSend(`Sütü bardağıma doldur bakalım! Kendi özel süt tarifimi pişirme kazanında kaynattım. Tarifimin detayları:
+- Süt Tabanı (Yağlı/Yağsız Çeşidi): ${selectedBaseDesc}
+- Şifalı Bitki / Tat Aroması: ${selectedFlavorDesc}
+- Sıcaklık Derecesi: ${selectedTempDesc}
+Bunu benim için kuzu bilgeliğinle sağlıksal, psikolojik/ruhsal etkileriyle yorumlar mısın Baa? Eğer yarın iş falan varsa veya saat gece olduysa bardağımı yudumlarken kuzu gibi tatlı sert uyar canım abim!`);
     }, 1500);
   };
 
@@ -442,51 +686,225 @@ export default function App() {
               {selectedCountry.introduction}
             </div>
           </div>
+
+          {/* Kendini BAA'ya Anlat (Sırdaş Hafızası) */}
+          <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-4 flex flex-col gap-3 shadow-lg shadow-zinc-950/40">
+            <div className="flex items-center justify-between border-b border-zinc-800/50 pb-2">
+              <span className="text-xs font-bold text-zinc-300 font-mono tracking-wider flex items-center gap-1.5 uppercase">
+                <Sparkles size={13} className="text-amber-500 animate-pulse" />
+                Sırdaş Hafızası (Baa Seni Tanısın)
+              </span>
+              {userProfileSaved && (
+                <span className="text-[9px] bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded-full font-mono border border-emerald-500/20">
+                  Aktif Hafıza ✓
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="flex flex-col gap-1">
+                <label className="text-zinc-500 font-mono text-[10px]">Adın / Mahlasın</label>
+                <input
+                  type="text"
+                  placeholder="örn. Can, Sırdaş"
+                  value={userName}
+                  onChange={(e) => setUserName(e.target.value)}
+                  className="bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-zinc-200 focus:outline-none focus:border-amber-500/50"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-zinc-500 font-mono text-[10px]">Yaşın</label>
+                <input
+                  type="number"
+                  placeholder="örn. 25"
+                  value={userAge}
+                  onChange={(e) => setUserAge(e.target.value)}
+                  className="bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-zinc-200 focus:outline-none focus:border-amber-500/50"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="flex flex-col gap-1">
+                <label className="text-zinc-500 font-mono text-[10px]">Ruh Halin / Derdin</label>
+                <select
+                  value={userMood}
+                  onChange={(e) => setUserMood(e.target.value)}
+                  className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-zinc-300 focus:outline-none focus:border-amber-500/50 appearance-none text-xs"
+                >
+                  <option value="Dertli / Yorgun">😔 Dertli / Yorgun</option>
+                  <option value="Uykusuz / Kaygılı">👀 Uykusuz / Kaygılı</option>
+                  <option value="Bunalmış / Sıkılmış">⚡ Bunalmış / Sıkılmış</option>
+                  <option value="Mutlu / Neşeli">✨ Mutlu / Neşeli</option>
+                  <option value="Meraklı / Felsefi">🧠 Meraklı / Felsefi</option>
+                </select>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-zinc-500 font-mono text-[10px]">İhtiyacın</label>
+                <select
+                  value={userGoal}
+                  onChange={(e) => setUserGoal(e.target.value)}
+                  className="bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-zinc-300 focus:outline-none focus:border-amber-500/50 appearance-none text-xs"
+                >
+                  <option value="Derdini Dinlet (Sözel Terapi)">🍷 Derdini Dinlet (Terapi)</option>
+                  <option value="Burç & Yıldız Analizi Yap">🔮 Burç & Yıldız Analizi</option>
+                  <option value="Rüya Tabiri">🌙 Rüya Tabiri</option>
+                  <option value="Süt Şifası & Kitap Tavsiyesi">📚 Kitap & Süt Önerisi</option>
+                  <option value="Muhabbet & Eğlence">🎲 Muhabbet & Eğlence</option>
+                </select>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                if (!userName.trim()) {
+                  alert("Lütfen adınızı girin ki Baa size ismiyle hitap edebilsin!");
+                  return;
+                }
+                setUserProfileSaved(true);
+                playLambSound(1.3);
+                // Send profile save notification to Baa
+                handleSend(
+                  `Selam Baa, ben geldim! Profil bilgilerim şöyle: Adım ${userName}, yaşım ${userAge || 'belirtilmedi'}, şu an "${userMood}" hissediyorum ve seninle "${userGoal}" üzerine dertleşmeye geldim. Benim bu halimi, rütbemi aklında tut; bana yaşıma, adımla hitap ederek o bitirim barmen bilgeliğinle, tatlı sert esnaf lisanınla hoş geldin de bakayım! meee.`
+                );
+              }}
+              className="mt-1 w-full bg-amber-500 hover:bg-amber-600 active:scale-95 text-zinc-950 font-bold text-xs py-2 px-3 rounded-xl transition-all shadow-md shadow-amber-500/10 flex items-center justify-center gap-1.5"
+            >
+              <span>Bilgileri Kaydet ve Baa'yı Çağır! ⚡</span>
+            </button>
+          </div>
         </div>
 
         {/* RIGHT COMPONENT: Context-aware interactive Dialog & Bar Milk Menu (Takes 7 cols) */}
         <div className="lg:col-span-7 flex flex-col gap-6">
           
-          {/* Real-time Traditional Milk Menu (Dynamic to selected Country) */}
+          {/* Süt Tab Sistemi (Geleneksel & Kendi Karışımın) */}
           <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-4 flex flex-col gap-3 shadow-lg shadow-zinc-950/40">
             <div className="flex items-center justify-between border-b border-zinc-800/60 pb-2">
-              <div className="flex items-center gap-1.5">
-                <div className="p-1 px-1.5 rounded bg-amber-500/10 border border-amber-500/20 text-xs">🥛</div>
+              <div className="flex items-center gap-2">
+                <span className="p-1 px-1.5 rounded bg-amber-500/10 border border-amber-500/20 text-xs">🥛</span>
                 <div>
-                  <h3 className="text-xs font-bold text-zinc-200 font-mono tracking-wider uppercase">Geleneksel Süt Kokteyli Menüsü</h3>
-                  <p className="text-[10px] text-zinc-500">Bardak seçerek Baa'nın o sütle ilgili muhabbetini tazeleyebilirsiniz.</p>
+                  <h3 className="text-xs font-bold text-zinc-200 font-mono tracking-wider uppercase">BAA SÜT TEZGAHI & ŞİFA LAB</h3>
+                  <p className="text-[10px] text-zinc-500">Geleneksel lezzetleri yudumlayın ya da kazanda kendi sütünüzü kaynatın!</p>
                 </div>
               </div>
-              <span className="text-xs font-mono font-semibold text-amber-500/80 bg-amber-500/10 border border-amber-500/20 px-2.5 py-0.5 rounded-full select-none">
-                %100 Safe & Alkolsüz
-              </span>
-            </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {selectedCountry.milkOptions.map((milk) => (
-                <div 
-                  id={`milk-card-${milk.id}`}
-                  key={milk.id}
-                  onClick={() => pourMilk(milk)}
-                  className="bg-zinc-900/40 hover:bg-zinc-900/90 border border-zinc-800/80 hover:border-amber-500/30 rounded-xl p-3 flex flex-col justify-between gap-2.5 transition-all duration-200 cursor-pointer group"
+              {/* Tab Switcher */}
+              <div className="flex bg-zinc-900 p-0.5 rounded-lg border border-zinc-800">
+                <button
+                  onClick={() => { setMilkMenuTab('predefined'); playLambSound(1.0); }}
+                  className={`px-2.5 py-1 rounded-md text-[10px] font-mono font-bold transition-all ${
+                    milkMenuTab === 'predefined'
+                      ? 'bg-amber-500 text-zinc-950 shadow-md'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-2xl group-hover:scale-110 transition-transform">{milk.icon}</span>
-                    <span className="text-[9px] font-mono bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded uppercase font-semibold">Tazelen</span>
+                  MENÜ
+                </button>
+                <button
+                  onClick={() => { setMilkMenuTab('custom'); playLambSound(1.1); }}
+                  className={`px-2.5 py-1 rounded-md text-[10px] font-mono font-bold transition-all flex items-center gap-1 ${
+                    milkMenuTab === 'custom'
+                      ? 'bg-amber-500 text-zinc-950 shadow-md'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  ŞİFA KAZANI ⚗️
+                </button>
+              </div>
+            </div>
+
+            {milkMenuTab === 'predefined' ? (
+              /* Traditional predefined list */
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {selectedCountry.milkOptions.map((milk) => (
+                  <div 
+                    id={`milk-card-${milk.id}`}
+                    key={milk.id}
+                    onClick={() => pourMilk(milk)}
+                    className="bg-zinc-900/40 hover:bg-zinc-900/90 border border-zinc-800/80 hover:border-amber-500/30 rounded-xl p-3 flex flex-col justify-between gap-2.5 transition-all duration-200 cursor-pointer group"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-2xl group-hover:scale-110 transition-transform">{milk.icon}</span>
+                      <span className="text-[9px] font-mono bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded uppercase font-semibold text-amber-500">Yudumla</span>
+                    </div>
+                    
+                    <div>
+                      <h4 className="text-xs font-bold text-white group-hover:text-amber-300 transition-colors">{milk.name}</h4>
+                      <p className="text-[10px] text-zinc-400 leading-snug mt-1 h-[32px] overflow-hidden">{milk.desc}</p>
+                    </div>
+
+                    <div className="border-t border-zinc-800/60 pt-1.5 flex items-center gap-1.5">
+                      <Sparkles size={10} className="text-emerald-400 flex-shrink-0" />
+                      <span className="text-[9px] font-mono text-zinc-400 group-hover:text-emerald-300 transition-colors truncate">{milk.effect}</span>
+                    </div>
                   </div>
+                ))}
+              </div>
+            ) : (
+              /* Custom recipe milk creation lab */
+              <div className="bg-zinc-900/20 border border-zinc-800/50 rounded-xl p-3 flex flex-col gap-3">
+                
+                {/* 3 columns of selectors */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                   
-                  <div>
-                    <h4 className="text-xs font-bold text-white group-hover:text-amber-300 transition-colors">{milk.name}</h4>
-                    <p className="text-[10px] text-zinc-400 leading-snug mt-1 h-[32px] overflow-hidden">{milk.desc}</p>
+                  {/* Süt Tabanı */}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] font-mono text-amber-400/85">1. SÜT TABANI / YAĞ SEVİYESİ</span>
+                    <select
+                      value={milkBase}
+                      onChange={(e) => setMilkBase(e.target.value)}
+                      className="bg-zinc-950 border border-zinc-850 rounded-lg p-2 text-zinc-300 focus:outline-none focus:border-amber-500/50"
+                    >
+                      <option value="tam_yagli">🥛 %100 Tam Yağlı Köy Sütü</option>
+                      <option value="yarim_yagli">🥛 %1.5 Yarım Yağlı Süt</option>
+                      <option value="yagsiz">🥛 %0 Yağsız Diyet Fit Süt</option>
+                      <option value="laktozsuz">🌱 Laktozsuz Süt (Saf Sindirim)</option>
+                      <option value="manda">🥥 Köy Usulü Yağlı Manda Sütü</option>
+                    </select>
                   </div>
 
-                  <div className="border-t border-zinc-800/60 pt-1.5 flex items-center gap-1.5">
-                    <Sparkles size={10} className="text-emerald-400 flex-shrink-0" />
-                    <span className="text-[9px] font-mono text-zinc-400 group-hover:text-emerald-300 transition-colors truncate">{milk.effect}</span>
+                  {/* Aromatik Katkı */}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] font-mono text-amber-400/85">2. DOĞAL AROMATİK KATKILAR</span>
+                    <select
+                      value={milkFlavor}
+                      onChange={(e) => setMilkFlavor(e.target.value)}
+                      className="bg-zinc-950 border border-zinc-850 rounded-lg p-2 text-zinc-300 focus:outline-none focus:border-amber-500/50"
+                    >
+                      <option value="bal_karabiber">🍯 Süzme Bal & Karabiber (Şifa)</option>
+                      <option value="tarcin_salep">🍂 Kış Tarçını & Salep Tozu</option>
+                      <option value="zencefil">🍋 Zencefil & Karanfil (Enerji)</option>
+                      <option value="damla">🏛 Damla Sakızı & Kakule</option>
+                      <option value="lavanta_uyku">🪻 Yabani Lavanta & Melisa Özü</option>
+                    </select>
                   </div>
+
+                  {/* Isı */}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[10px] font-mono text-amber-400/85">3. SICAKLIK DEĞERİ</span>
+                    <select
+                      value={milkTemp}
+                      onChange={(e) => setMilkTemp(e.target.value)}
+                      className="bg-zinc-950 border border-zinc-850 rounded-lg p-2 text-zinc-300 focus:outline-none focus:border-amber-500/50"
+                    >
+                      <option value="ilik">♨ Ilık Derecede</option>
+                      <option value="kaynar">🌋 Kaynar Kaynar Sıcak</option>
+                      <option value="buzlu">❄ Buzlu Soğuk</option>
+                    </select>
+                  </div>
+
                 </div>
-              ))}
-            </div>
+
+                <button
+                  onClick={pourCustomMilk}
+                  className="w-full bg-gradient-to-r from-amber-600 to-yellow-500 hover:from-amber-500 hover:to-yellow-400 text-zinc-950 font-extrabold text-xs py-2.5 px-4 rounded-xl transition-all shadow-md shadow-amber-500/5 duration-300 select-none flex items-center justify-center gap-1.5 shadow-amber-500/20"
+                >
+                  <span>KAZANDA SÜTÜ PİŞİR & SICAK SIRDAŞA SUN! ⚗️🥛</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Core Chat Box System */}
@@ -515,7 +933,7 @@ export default function App() {
                     setSelectedMilk(null);
                     playLambSound(1.0);
                   }}
-                  className="p-1 px-2 hover:bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-white rounded text-[10px] font-mono transition-all"
+                  className="p-1 px-2 hover:bg-zinc-900 border border-zinc-800 hover:border-zinc-750 text-zinc-400 hover:text-white rounded text-[10px] font-mono transition-all cursor-pointer"
                 >
                   Masayı Temizle (Sıfırla)
                 </button>
@@ -538,7 +956,7 @@ export default function App() {
                       
                       {/* Name Header */}
                       <span className={`text-[10px] font-mono tracking-wider ${msg.role === 'user' ? 'text-zinc-500 text-right' : 'text-amber-500/80'}`}>
-                        {msg.role === 'user' ? 'DEĞERLİ MÜŞTERİ' : `KUZU BAA — ${selectedCountry.name.toUpperCase()}`}
+                        {msg.role === 'user' ? 'DEĞERLİ SIRDAŞ' : `KUZU BAA — ${selectedCountry.name.toUpperCase()}`}
                       </span>
 
                       {/* Content Bubble */}
@@ -550,6 +968,46 @@ export default function App() {
                         
                         {/* Rendering output. In Turkey prompt it guarantees no markdown but we sanitize simple things */}
                         <p className="whitespace-pre-line leading-relaxed">{msg.content}</p>
+
+                        {/* Custom Media Attachment Card */}
+                        {(msg as any).mediaRecommendation && (
+                          <div className="mt-3 bg-zinc-950/90 border border-zinc-800/85 p-3.5 rounded-xl flex flex-col gap-2.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-mono tracking-wider font-extrabold text-amber-400 flex items-center gap-1.5">
+                                {(msg as any).mediaRecommendation.type === 'music' ? (
+                                  <>
+                                    <Music size={12} className="text-amber-500 animate-pulse" />
+                                    BAA'DAN SANA ÖZEL MÜZİK ÖNERİSİ 🎵
+                                  </>
+                                ) : (
+                                  <>
+                                    <Film size={12} className="text-amber-400 animate-pulse" />
+                                    BAA'DAN BİLGİLENDİRİCİ VİDEO ÖNERİSİ 🎥
+                                  </>
+                                )}
+                              </span>
+                              <span className="text-[9px] font-mono bg-zinc-900 text-amber-500 px-2 py-0.5 rounded border border-amber-500/25">
+                                {(msg as any).mediaRecommendation.type.toUpperCase()}
+                              </span>
+                            </div>
+
+                            <div className="font-sans">
+                              <h5 className="text-xs font-bold text-white tracking-tight">{(msg as any).mediaRecommendation.title}</h5>
+                              <p className="text-[10.5px] leading-relaxed text-zinc-400 mt-1 italic font-normal">{(msg as any).mediaRecommendation.description}</p>
+                            </div>
+
+                            <a 
+                              href={`https://www.youtube.com/results?search_query=${encodeURIComponent((msg as any).mediaRecommendation.query)}`}
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center justify-center gap-2 bg-gradient-to-r from-red-600/15 to-red-600/35 hover:from-red-600/25 hover:to-red-600/45 border border-red-500/30 hover:border-red-500/50 text-red-400 px-2.5 py-1.5 rounded-lg text-xs font-mono font-bold select-none text-center transition-all cursor-pointer w-full text-[11px]"
+                            >
+                              <Play size={10} className="fill-red-400 text-red-400" />
+                              <span>Bunu YouTube'da Aç & Dinle/İzle!</span>
+                              <ExternalLink size={10} />
+                            </a>
+                          </div>
+                        )}
 
                         {/* Search Grounding Sources Output */}
                         {msg.groundingSources && msg.groundingSources.length > 0 && (
@@ -566,7 +1024,7 @@ export default function App() {
                                   href={source.uri} 
                                   target="_blank" 
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 bg-zinc-900/90 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 px-2.5 py-1 rounded-md text-[10px] text-zinc-400 hover:text-amber-300 transition-all font-mono"
+                                  className="inline-flex items-center gap-1 bg-zinc-900/90 hover:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 px-2.5 py-1 rounded-md text-[10px] text-zinc-400 hover:text-amber-300 transition-all font-mono"
                                 >
                                   <span>{source.title.slice(0, 18) || 'Kaynak'}</span>
                                   <ExternalLink size={8} />
@@ -623,7 +1081,7 @@ export default function App() {
                 ⚽ Maç Skorları
               </button>
               <button 
-                onClick={() => handleSend("Bu akşam TV'de, dizilerde neler var? Kuzu aklınla bana güzel bir ekran rehberi ver Baa.")}
+                onClick={() => handleSend("Bu akşam hangi kanalda ne var? Kuzu aklınla bana güzel bir ekran rehberi ver Baa.")}
                 className="px-3 py-1 rounded-full bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-400 hover:text-white transition-all font-mono"
               >
                 📺 Bu Akşam TV
@@ -635,33 +1093,56 @@ export default function App() {
                 ✨ Burç Yorumları
               </button>
               <button 
-                onClick={() => handleSend("Dün gece rüyamda garip semboller gördüm. Kuzu aklınla bunu Jung ekolünde, dertlice anlatıp yorumlar mısın?")}
+                onClick={() => handleSend("Dün gece rüyamda garip semboller gördüm. Kuzu aklınla bunu Jung ekolünde, dertlice anlatıp rüyamı yorumlar mısın?")}
                 className="px-3 py-1 rounded-full bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-400 hover:text-white transition-all font-mono"
               >
                 💭 Rüya Tabiri
               </button>
               <button 
+                onClick={() => handleSend("Altılıda son ayakta kim gelir, son dakika durumları ne? Komik, uyanık esnaf tahminlerini bekliyorum bilge dert ortağım!")}
+                className="px-3 py-1 rounded-full bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-400 hover:text-white transition-all font-mono"
+              >
+                🐎 Altılı Ganyan Yorumu
+              </button>
+              <button 
                 onClick={() => handleSend("Biraz dertliyim, canım sıkkın bilge kuzum. Bana ruhumu sakinleştirecek bir kitap veya bilgece felsefi kelamlar söyle.")}
                 className="px-3 py-1 rounded-full bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 text-xs text-zinc-400 hover:text-white transition-all font-mono"
               >
-                📚 Biraz Dertliyim
+                📚 Kitap Tavsiyesi
               </button>
             </div>
 
             {/* Input Row panel */}
             <div className="bg-zinc-950 p-4 border-t border-zinc-800/80 flex items-center gap-3">
+              {/* STT Microphone Input Trigger Button */}
+              <button
+                onClick={toggleRecording}
+                className={`w-11 h-11 shrink-0 rounded-xl flex items-center justify-center border transition-all duration-150 cursor-pointer ${
+                  isRecording 
+                    ? 'bg-red-500/15 border-red-500 text-red-500 animate-pulse shadow-lg shadow-red-500/15' 
+                    : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700'
+                }`}
+                title={isRecording ? "Ses dinleniyor... Durdurmak için tıklayın." : "Sesli dertleşmek için tıklayın."}
+              >
+                {isRecording ? (
+                  <MicOff size={18} className="text-red-500" />
+                ) : (
+                  <Mic size={18} />
+                )}
+              </button>
+
               <input
                 id="message-input"
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'onKeyDown' || e.key === 'Enter') {
+                  if (e.key === 'Enter') {
                     handleSend();
                   }
                 }}
                 disabled={isThinking}
-                placeholder="Bilge kuzu barmene anlat hele, ne dertleşmek istersin?..."
+                placeholder={isRecording ? "Konuşun, sesiniz yazıya dökülüyor..." : "Bilge kuzu barmene anlat hele, ne dertleşmek istersin?..."}
                 className="flex-1 bg-zinc-900 hover:bg-zinc-850 focus:bg-zinc-900 border border-zinc-800 focus:border-amber-500/50 outline-none rounded-xl px-4 py-3 text-sm text-zinc-100 placeholder-zinc-500 transition-all font-sans"
               />
               <button
